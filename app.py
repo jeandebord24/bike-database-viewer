@@ -12,9 +12,26 @@ CORS(app)
 DB_PATH = os.environ.get("VELO_DB", r"C:\Users\jeand\lbc-velo-components\velobase.db")
 IMAGES_ROOT = Path(os.environ.get("VELO_IMAGES", r"C:\Users\jeand\lbc-velo-components\data\images\velobase"))
 
+# Disraeli DB — try env var, then known locations
+_DISRAELI_CANDIDATES = [
+    os.environ.get("DISRAELI_DB", ""),
+    r"C:\Users\jeand\lbc-velo-components\disraeli.db",
+    r"C:\Users\jeand\lbc-velo-components\.claude\worktrees\determined-mclean\disraeli.db",
+]
+DISRAELI_DB_PATH = next((p for p in _DISRAELI_CANDIDATES if p and os.path.exists(p)), None)
+
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def get_disraeli_db():
+    if not DISRAELI_DB_PATH:
+        abort(503, description="disraeli.db introuvable")
+    conn = sqlite3.connect(DISRAELI_DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
@@ -342,6 +359,124 @@ def api_links_delete(link_id):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+# ---------- Disraeli Gears ----------
+
+@app.route("/api/disraeli/stats")
+def api_disraeli_stats():
+    conn = get_disraeli_db()
+    total_derailleurs = conn.execute("SELECT COUNT(*) FROM derailleurs").fetchone()[0]
+    total_brands = conn.execute("SELECT COUNT(*) FROM brands").fetchone()[0]
+    total_images = conn.execute("SELECT COUNT(*) FROM derailleur_images").fetchone()[0]
+    total_documents = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    conn.close()
+    return jsonify({
+        "total_derailleurs": total_derailleurs,
+        "total_brands": total_brands,
+        "total_images": total_images,
+        "total_documents": total_documents,
+    })
+
+
+@app.route("/api/disraeli/brands")
+def api_disraeli_brands():
+    conn = get_disraeli_db()
+    rows = conn.execute(
+        """SELECT b.id, b.name, COUNT(d.id) as count
+           FROM brands b
+           LEFT JOIN derailleurs d ON d.brand_id = b.id
+           GROUP BY b.id, b.name
+           HAVING count > 0
+           ORDER BY count DESC, b.name"""
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/disraeli/derailleurs")
+def api_disraeli_derailleurs():
+    conn = get_disraeli_db()
+    brand = request.args.get("brand")
+    brand_id = request.args.get("brand_id")
+    conditions = []
+    params = []
+    if brand_id:
+        conditions.append("d.brand_id = ?")
+        params.append(int(brand_id))
+    elif brand:
+        conditions.append("b.name = ?")
+        params.append(brand)
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = conn.execute(
+        f"""SELECT d.id, d.title, d.model, d.year_text, b.name as brand_name,
+                   img.url as primary_image
+            FROM derailleurs d
+            JOIN brands b ON b.id = d.brand_id
+            LEFT JOIN derailleur_images img ON img.derailleur_id = d.id AND img.is_primary = 1
+            {where}
+            ORDER BY b.name, d.year_text, d.title""",
+        params,
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/disraeli/derailleurs/<int:derailleur_id>")
+def api_disraeli_derailleur_detail(derailleur_id):
+    conn = get_disraeli_db()
+    row = conn.execute(
+        """SELECT d.*, b.name as brand_name
+           FROM derailleurs d
+           JOIN brands b ON b.id = d.brand_id
+           WHERE d.id = ?""",
+        (derailleur_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        abort(404)
+    d = dict(row)
+
+    images = conn.execute(
+        "SELECT url, local_path, is_primary FROM derailleur_images WHERE derailleur_id = ? ORDER BY is_primary DESC",
+        (derailleur_id,),
+    ).fetchall()
+    d["images"] = [dict(i) for i in images]
+
+    docs = conn.execute(
+        """SELECT doc.id, doc.title, doc.year_text, doc.doc_type, doc.url, doc.category
+           FROM documents doc
+           JOIN derailleur_documents dd ON dd.document_id = doc.id
+           WHERE dd.derailleur_id = ?
+           ORDER BY doc.year_text, doc.title""",
+        (derailleur_id,),
+    ).fetchall()
+    d["documents"] = [dict(doc) for doc in docs]
+
+    conn.close()
+    return jsonify(d)
+
+
+@app.route("/api/disraeli/documents")
+def api_disraeli_documents():
+    conn = get_disraeli_db()
+    brand = request.args.get("brand")
+    brand_id = request.args.get("brand_id")
+    conditions = []
+    params = []
+    if brand_id:
+        conditions.append("doc.brand_id = ?")
+        params.append(int(brand_id))
+    elif brand:
+        conditions.append("b.name = ?")
+        params.append(brand)
+    where = ("JOIN brands b ON b.id = doc.brand_id WHERE " + " AND ".join(conditions)) if conditions else ""
+    rows = conn.execute(
+        f"SELECT doc.* FROM documents doc {where} ORDER BY doc.year_text, doc.title",
+        params,
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
 
 if __name__ == "__main__":

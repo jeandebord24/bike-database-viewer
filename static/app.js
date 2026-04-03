@@ -7,6 +7,7 @@ let state = {
     currentPage: 1,
     perPage: 48,
     detailId: null,
+    disraeli: { view: null }, // null | {type:'brand', id, name} | {type:'derailleur', id}
 };
 
 // --- Nav ---
@@ -15,6 +16,7 @@ document.querySelectorAll("nav a[data-page]").forEach(a => {
         e.preventDefault();
         state.page = a.dataset.page;
         state.detailId = null;
+        if (a.dataset.page === "disraeli") state.disraeli.view = null;
         updateNav();
         render();
     });
@@ -34,6 +36,7 @@ function render() {
         case "stats": return renderStats();
         case "catalogs": return renderCatalogs();
         case "links": return renderLinks();
+        case "disraeli": return renderDisraeli();
     }
 }
 
@@ -372,6 +375,192 @@ window.deleteLink = async function(id) {
     await fetch(`${API}/api/links/${id}`, { method: "DELETE" });
     loadLinks();
 };
+
+// --- Disraeli Gears ---
+function renderDisraeli() {
+    const v = state.disraeli.view;
+    if (!v) return renderDisraeliBrands();
+    if (v.type === "brand") return renderDisraeliDerailleurs(v.id, v.name);
+    if (v.type === "derailleur") return renderDisraeliDetail(v.id);
+}
+
+async function renderDisraeliBrands() {
+    app.innerHTML = `
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+            <h2 style="margin:0">Disraeli Gears</h2>
+        </div>
+        <div class="filters" style="margin-bottom:16px">
+            <input type="search" id="dg-search" placeholder="Filtrer les marques...">
+        </div>
+        <div id="dg-brands">Chargement...</div>
+    `;
+
+    const [brands, stats] = await Promise.all([
+        fetch(`${API}/api/disraeli/brands`).then(r => r.json()),
+        fetch(`${API}/api/disraeli/stats`).then(r => r.json()),
+    ]);
+
+    // Stats bar
+    const statsHtml = `
+        <div class="stats-grid" style="margin-bottom:20px">
+            <div class="stat-card"><h3>Dérailleurs</h3><div class="big-number">${stats.total_derailleurs}</div></div>
+            <div class="stat-card"><h3>Marques</h3><div class="big-number">${stats.total_brands}</div></div>
+            <div class="stat-card"><h3>Images</h3><div class="big-number">${stats.total_images.toLocaleString()}</div></div>
+            <div class="stat-card"><h3>Documents</h3><div class="big-number">${stats.total_documents.toLocaleString()}</div></div>
+        </div>
+    `;
+    document.getElementById("dg-brands").innerHTML = statsHtml + renderBrandGrid(brands);
+
+    let searchTimeout;
+    document.getElementById("dg-search").oninput = e => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            const q = e.target.value.toLowerCase();
+            const filtered = brands.filter(b => b.name.toLowerCase().includes(q));
+            document.getElementById("dg-brands").innerHTML = statsHtml + renderBrandGrid(filtered);
+            attachBrandClicks();
+        }, 200);
+    };
+
+    attachBrandClicks();
+}
+
+function renderBrandGrid(brands) {
+    if (!brands.length) return `<p style="color:var(--text2)">Aucune marque</p>`;
+    return `<div style="display:flex;flex-wrap:wrap;gap:10px">` +
+        brands.map(b => `
+            <div class="dg-brand-chip" data-id="${b.id}" data-name="${esc(b.name)}"
+                 style="cursor:pointer;padding:8px 14px;background:var(--bg2);border-radius:20px;border:1px solid var(--bg3);
+                        transition:border-color .15s;white-space:nowrap"
+                 onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--bg3)'">
+                <span style="font-weight:600">${esc(b.name)}</span>
+                <span style="color:var(--text2);margin-left:6px;font-size:12px">${b.count}</span>
+            </div>
+        `).join("") +
+        `</div>`;
+}
+
+function attachBrandClicks() {
+    document.querySelectorAll(".dg-brand-chip").forEach(el => {
+        el.onclick = () => {
+            state.disraeli.view = { type: "brand", id: el.dataset.id, name: el.dataset.name };
+            render();
+        };
+    });
+}
+
+async function renderDisraeliDerailleurs(brandId, brandName) {
+    app.innerHTML = `
+        <a class="back-btn" id="dg-back">&larr; Toutes les marques</a>
+        <h2 style="margin:12px 0 16px">${esc(brandName)}</h2>
+        <div id="dg-list">Chargement...</div>
+    `;
+    document.getElementById("dg-back").onclick = () => { state.disraeli.view = null; render(); };
+
+    const derailleurs = await fetch(`${API}/api/disraeli/derailleurs?brand_id=${brandId}`).then(r => r.json());
+
+    if (!derailleurs.length) {
+        document.getElementById("dg-list").innerHTML = `<p style="color:var(--text2)">Aucun dérailleur</p>`;
+        return;
+    }
+
+    document.getElementById("dg-list").innerHTML = `
+        <div class="grid">
+            ${derailleurs.map(d => `
+                <div class="card dg-card" data-id="${d.id}">
+                    ${d.primary_image
+                        ? `<img src="${d.primary_image}" alt="${esc(d.title)}" loading="lazy" onerror="this.style.display='none'">`
+                        : `<div style="aspect-ratio:1;background:var(--bg3);display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:12px">No image</div>`
+                    }
+                    <div class="info">
+                        <div class="name" title="${esc(d.title)}">${esc(d.title)}</div>
+                        ${d.year_text ? `<div class="year">${esc(d.year_text)}</div>` : ""}
+                    </div>
+                </div>
+            `).join("")}
+        </div>
+    `;
+
+    document.querySelectorAll(".dg-card").forEach(card => {
+        card.onclick = () => {
+            state.disraeli.view = { type: "derailleur", id: card.dataset.id };
+            render();
+        };
+    });
+}
+
+async function renderDisraeliDetail(id) {
+    app.innerHTML = `<a class="back-btn" id="dg-back-detail">&larr; Retour</a><div style="margin-top:12px">Chargement...</div>`;
+    document.getElementById("dg-back-detail").onclick = () => {
+        state.disraeli.view = state.disraeli.view._prev || null;
+        render();
+    };
+
+    const d = await fetch(`${API}/api/disraeli/derailleurs/${id}`).then(r => r.json());
+
+    const images = d.images || [];
+    const mainImg = images[0] ? images[0].url : null;
+
+    // Store prev view for back button
+    const prevBrandId = d.brand_id;
+    const prevBrandName = d.brand_name;
+
+    app.innerHTML = `
+        <a class="back-btn" id="dg-back-detail">&larr; ${esc(d.brand_name)}</a>
+        <div class="detail">
+            <div class="gallery">
+                ${mainImg
+                    ? `<img class="main-img" id="dg-main-img" src="${mainImg}" alt="${esc(d.title)}">`
+                    : `<div style="aspect-ratio:1;background:var(--bg2);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text2)">Pas d'image</div>`
+                }
+                ${images.length > 1 ? `
+                <div class="thumbs">
+                    ${images.map((img, i) => `
+                        <img src="${img.url}" data-full="${img.url}" class="${i === 0 ? "active" : ""}" alt="thumb"
+                             onerror="this.style.display='none'">
+                    `).join("")}
+                </div>` : ""}
+            </div>
+            <div class="meta">
+                <h1>${esc(d.title)}</h1>
+                <div class="brand-link">${esc(d.brand_name)}</div>
+                <table class="specs-table">
+                    ${d.year_text ? `<tr><td>Année</td><td>${esc(d.year_text)}</td></tr>` : ""}
+                    ${d.model ? `<tr><td>Modèle</td><td>${esc(d.model)}</td></tr>` : ""}
+                </table>
+                ${d.description ? `<div style="margin-top:16px;line-height:1.7;color:var(--text1);font-size:14px">${d.description}</div>` : ""}
+                ${d.url ? `<p style="margin-top:16px"><a href="https://www.disraeligears.co.uk/site/${d.url}" target="_blank" style="color:var(--accent)">Voir sur disraeligears.co.uk &rarr;</a></p>` : ""}
+                ${d.documents && d.documents.length > 0 ? `
+                <div style="margin-top:20px">
+                    <h3 style="margin-bottom:10px;font-size:15px">Documents liés (${d.documents.length})</h3>
+                    <div style="display:flex;flex-direction:column;gap:6px">
+                        ${d.documents.map(doc => `
+                            <div style="padding:8px 12px;background:var(--bg2);border-radius:6px;font-size:13px">
+                                <span style="color:var(--text1)">${esc(doc.title)}</span>
+                                ${doc.year_text ? `<span style="color:var(--text2);margin-left:8px">${esc(doc.year_text)}</span>` : ""}
+                                ${doc.doc_type ? `<span style="color:var(--accent2);margin-left:8px;font-size:11px;text-transform:uppercase">${esc(doc.doc_type)}</span>` : ""}
+                            </div>
+                        `).join("")}
+                    </div>
+                </div>` : ""}
+            </div>
+        </div>
+    `;
+
+    document.getElementById("dg-back-detail").onclick = () => {
+        state.disraeli.view = { type: "brand", id: prevBrandId, name: prevBrandName };
+        render();
+    };
+
+    document.querySelectorAll(".thumbs img").forEach(thumb => {
+        thumb.onclick = () => {
+            const main = document.getElementById("dg-main-img");
+            if (main) main.src = thumb.dataset.full;
+            document.querySelectorAll(".thumbs img").forEach(t => t.classList.remove("active"));
+            thumb.classList.add("active");
+        };
+    });
+}
 
 // --- Utils ---
 function esc(s) {
