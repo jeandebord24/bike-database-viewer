@@ -536,7 +536,10 @@ async function renderDisraeliDetail(id) {
                     <div style="display:flex;flex-direction:column;gap:6px">
                         ${d.documents.map(doc => `
                             <div style="padding:8px 12px;background:var(--bg2);border-radius:6px;font-size:13px">
-                                <span style="color:var(--text1)">${esc(doc.title)}</span>
+                                ${doc.url
+                                    ? `<a href="https://www.disraeligears.co.uk/site/${doc.url}" target="_blank" style="color:var(--accent)">${esc(doc.title)}</a>`
+                                    : `<span style="color:var(--text1)">${esc(doc.title)}</span>`
+                                }
                                 ${doc.year_text ? `<span style="color:var(--text2);margin-left:8px">${esc(doc.year_text)}</span>` : ""}
                                 ${doc.doc_type ? `<span style="color:var(--accent2);margin-left:8px;font-size:11px;text-transform:uppercase">${esc(doc.doc_type)}</span>` : ""}
                             </div>

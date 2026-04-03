@@ -1,12 +1,40 @@
 """Velo Components Viewer — API Flask."""
 import os
 import sqlite3
+import base64
 from pathlib import Path
-from flask import Flask, jsonify, request, send_from_directory, send_file, abort
+from flask import Flask, jsonify, request, send_from_directory, send_file, abort, Response
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
+
+# Basic Auth
+_AUTH_USER = os.environ.get("VELO_AUTH_USER", "velo")
+_AUTH_PASS = os.environ.get("VELO_AUTH_PASS", "velobase2024")
+
+
+def _check_auth(req):
+    auth = req.headers.get("Authorization", "")
+    if not auth.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(auth[6:]).decode("utf-8")
+        user, _, pwd = decoded.partition(":")
+        return user == _AUTH_USER and pwd == _AUTH_PASS
+    except Exception:
+        return False
+
+
+@app.before_request
+def require_auth():
+    if request.path.startswith("/static/"):
+        return None
+    if not _check_auth(request):
+        return Response(
+            "Unauthorized", 401,
+            {"WWW-Authenticate": 'Basic realm="Velo"'},
+        )
 
 # Config
 DB_PATH = os.environ.get("VELO_DB", r"C:\Users\jeand\lbc-velo-components\velobase.db")
@@ -132,12 +160,12 @@ def api_brands():
     section = request.args.get("section")
     if section:
         rows = conn.execute(
-            "SELECT brand, COUNT(*) as count FROM items WHERE section=? GROUP BY brand ORDER BY count DESC",
+            "SELECT brand, COUNT(*) as count FROM items WHERE section=? AND brand != '' AND brand IS NOT NULL GROUP BY brand ORDER BY count DESC",
             (section,),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT brand, COUNT(*) as count FROM items GROUP BY brand ORDER BY count DESC"
+            "SELECT brand, COUNT(*) as count FROM items WHERE brand != '' AND brand IS NOT NULL GROUP BY brand ORDER BY count DESC"
         ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
@@ -254,6 +282,25 @@ def api_item_detail(item_id):
     ).fetchall()
     d["specs"] = {s["key"]: s["value"] for s in specs if s["key"] not in exclude}
 
+    # Related catalogs: same brand, year overlap
+    if d.get("brand") and d["brand"].strip():
+        year_start = d.get("year_start")
+        year_end = d.get("year_end") or year_start
+        cat_params = [d["brand"]]
+        cat_cond = "brand = ?"
+        if year_start:
+            cat_cond += " AND (year_raw IS NULL OR year_raw = '' OR CAST(year_raw AS INTEGER) BETWEEN ? AND ?)"
+            y_lo = max(1900, (year_start or 1900) - 5)
+            y_hi = min(2030, (year_end or year_start or 2030) + 5)
+            cat_params.extend([y_lo, y_hi])
+        cats = conn.execute(
+            f"SELECT id, title, brand, year_raw, download_url FROM catalogs WHERE {cat_cond} ORDER BY year_raw, title",
+            cat_params,
+        ).fetchall()
+        d["related_catalogs"] = [dict(c) for c in cats]
+    else:
+        d["related_catalogs"] = []
+
     conn.close()
     return jsonify(d)
 
@@ -265,7 +312,7 @@ def api_stats():
         "SELECT section, COUNT(*) as count FROM items GROUP BY section ORDER BY count DESC"
     ).fetchall()
     top_brands = conn.execute(
-        "SELECT brand, COUNT(*) as count FROM items GROUP BY brand ORDER BY count DESC LIMIT 20"
+        "SELECT brand, COUNT(*) as count FROM items WHERE brand != '' AND brand IS NOT NULL GROUP BY brand ORDER BY count DESC LIMIT 20"
     ).fetchall()
     total_images = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
     total_downloaded = conn.execute(
