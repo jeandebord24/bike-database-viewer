@@ -1,40 +1,12 @@
 """Velo Components Viewer — API Flask."""
 import os
 import sqlite3
-import base64
 from pathlib import Path
-from flask import Flask, jsonify, request, send_from_directory, send_file, abort, Response
+from flask import Flask, jsonify, request, send_from_directory, send_file, abort
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app)
-
-# Basic Auth
-_AUTH_USER = os.environ.get("VELO_AUTH_USER", "velo")
-_AUTH_PASS = os.environ.get("VELO_AUTH_PASS", "velobase2024")
-
-
-def _check_auth(req):
-    auth = req.headers.get("Authorization", "")
-    if not auth.startswith("Basic "):
-        return False
-    try:
-        decoded = base64.b64decode(auth[6:]).decode("utf-8")
-        user, _, pwd = decoded.partition(":")
-        return user == _AUTH_USER and pwd == _AUTH_PASS
-    except Exception:
-        return False
-
-
-@app.before_request
-def require_auth():
-    if request.path.startswith("/static/"):
-        return None
-    if not _check_auth(request):
-        return Response(
-            "Unauthorized", 401,
-            {"WWW-Authenticate": 'Basic realm="Velo"'},
-        )
 
 # Config
 DB_PATH = os.environ.get("VELO_DB", r"C:\Users\jeand\lbc-velo-components\velobase.db")
